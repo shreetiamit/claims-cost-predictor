@@ -67,5 +67,4 @@ jobs:
       # -------------------------------------------------------------------
       - name: Run the test suite
         run: |
-          echo "::error file=.github/workflows/tests.yml::This step is still a TODO."
-          exit 1
+          pytest -v
