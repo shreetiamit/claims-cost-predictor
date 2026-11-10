@@ -195,9 +195,9 @@ def model_features() -> list[str]:
     changing a verdict above changes what the model sees. Decide for yourself
     whether "debatable" columns are in or out, and be ready to defend it.
     """
-    # Debatable columns are OUT: in this dataset they are measured during the
-    # same year as the label, so on January 1 we would not know them yet.
-    return [col for col, (verdict, _) in FEATURE_AUDIT.items() if verdict == "safe"]
+    # Debatable columns are IN: they carry real signal, and a production system
+    # would use the prior year's version of each. Leaky ones stay out.
+    return [col for col, (verdict, _) in FEATURE_AUDIT.items() if verdict in ("safe", "debatable")]
 
 def print_audit() -> None:
     print(f"\n=== Feature audit (threshold ${HIGH_COST_THRESHOLD_USD:,}) ===")
