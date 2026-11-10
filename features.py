@@ -74,21 +74,21 @@ VALID_VERDICTS = ("safe", "leaky", "debatable", "not_a_feature")
 # spending happens. Keep that timeline in mind.
 # ---------------------------------------------------------------------------
 FEATURE_AUDIT: dict[str, tuple[str, str]] = {
-    "age_bucket": ("TODO", ""),
-    "sex": ("TODO", ""),
-    "region": ("TODO", ""),
-    "total_claims": ("TODO", ""),
-    "medical_claims": ("TODO", ""),
-    "pharmacy_claims": ("TODO", ""),
-    "specialty_drug_fills": ("TODO", ""),
-    "total_billed_cents": ("TODO", ""),
-    "total_allowed_cents": ("TODO", ""),
-    "total_plan_paid_cents": ("TODO", ""),
-    "total_oop_cents": ("TODO", ""),
-    "unique_diagnosis_codes": ("TODO", ""),
-    "inpatient_claims": ("TODO", ""),
-    "has_specialty_drug": ("TODO", ""),
-    "is_high_cost": ("TODO", ""),
+    "age_bucket": ("safe", "known at enrollment, before the plan year starts"),
+    "sex": ("safe", "known at enrollment, before the plan year starts"),
+    "region": ("safe", "known at enrollment, before the plan year starts"),
+    "total_claims": ("debatable", "last year's count is knowable on Jan 1, but this column counts claims in the same year as the label"),
+    "medical_claims": ("debatable", "same as total_claims: a prior-year version exists, this one is measured inside the outcome year"),
+    "pharmacy_claims": ("debatable", "same as total_claims: a prior-year version exists, this one is measured inside the outcome year"),
+    "specialty_drug_fills": ("debatable", "chronic specialty drugs often carry over from last year, but these fills happen during the outcome year"),
+    "total_billed_cents": ("leaky", "moves almost one-for-one with plan-paid, so it nearly restates the outcome"),
+    "total_allowed_cents": ("leaky", "allowed = plan-paid + out-of-pocket for most claims, so it contains the label's own column"),
+    "total_plan_paid_cents": ("leaky", "the label is defined directly from this column (plan-paid > threshold)"),
+    "total_oop_cents": ("leaky", "rises with the same in-year spending that defines the label"),
+    "unique_diagnosis_codes": ("debatable", "prior-year diagnoses are knowable on Jan 1, but this counts diagnoses seen during the outcome year"),
+    "inpatient_claims": ("debatable", "prior-year admissions are knowable, but these admissions happen during the outcome year"),
+    "has_specialty_drug": ("debatable", "a chronic specialty drug often carries over from last year, but this flag is measured in the outcome year"),
+    "is_high_cost": ("not_a_feature", "this is the label the model is trying to predict"),
 }
 
 
@@ -112,8 +112,7 @@ def approved_claims(claims: pd.DataFrame) -> pd.DataFrame:
 
     Roughly 8% of claims are denied, so this line changes your numbers.
     """
-    raise NotImplementedError("Implement approved_claims()")
-
+    return claims[claims["adjudication_status"] == "approved"].copy()
 
 def build_member_features(members: pd.DataFrame, claims: pd.DataFrame) -> pd.DataFrame:
     """
@@ -146,8 +145,30 @@ def build_member_features(members: pd.DataFrame, claims: pd.DataFrame) -> pd.Dat
         for them. Should their total_claims be NaN, or 0? Whatever you choose,
         the column dtypes should still be numeric.
     """
-    raise NotImplementedError("Implement build_member_features()")
+    agg = claims.groupby("member_id").agg(
+        total_claims=("claim_id", "count"),
+        medical_claims=("is_pharmacy", lambda s: (~s.astype(bool)).sum()),
+        pharmacy_claims=("is_pharmacy", lambda s: s.astype(bool).sum()),
+        specialty_drug_fills=("is_specialty_drug", lambda s: s.astype(bool).sum()),
+        total_billed_cents=("billed_cents", "sum"),
+        total_allowed_cents=("allowed_cents", "sum"),
+        total_plan_paid_cents=("plan_paid_cents", "sum"),
+        total_oop_cents=("out_of_pocket_cents", "sum"),
+        unique_diagnosis_codes=("diagnosis_code", lambda s: s[s != ""].nunique()),
+        inpatient_claims=("claim_type", lambda s: (s == "Institutional").sum()),
+        has_specialty_drug=("is_specialty_drug", lambda s: s.astype(bool).any()),
+    ).reset_index()
 
+    member_cols = ["member_id", "age_bucket", "sex", "region",
+                   "plan_year_start", "plan_year_end"]
+    features = members[member_cols].merge(agg, on="member_id", how="left")
+
+    # Members with no approved claims: they had zero claims, not unknown claims.
+    count_cols = [c for c in agg.columns if c not in ("member_id", "has_specialty_drug")]
+    features[count_cols] = features[count_cols].fillna(0).astype("int64")
+    features["has_specialty_drug"] = features["has_specialty_drug"].eq(True)
+
+    return features
 
 def add_label(features: pd.DataFrame) -> pd.DataFrame:
     """
@@ -160,8 +181,11 @@ def add_label(features: pd.DataFrame) -> pd.DataFrame:
     Write the one line that creates the label, then look hard at which column
     you just used. You will need that thought in TODO 4.
     """
-    raise NotImplementedError("Implement add_label()")
-
+    features = features.copy()
+    features["is_high_cost"] = (
+        features["total_plan_paid_cents"] > HIGH_COST_THRESHOLD_CENTS
+    ).astype(int)
+    return features
 
 def model_features() -> list[str]:
     """
@@ -171,8 +195,9 @@ def model_features() -> list[str]:
     changing a verdict above changes what the model sees. Decide for yourself
     whether "debatable" columns are in or out, and be ready to defend it.
     """
-    raise NotImplementedError("Implement model_features()")
-
+    # Debatable columns are OUT: in this dataset they are measured during the
+    # same year as the label, so on January 1 we would not know them yet.
+    return [col for col, (verdict, _) in FEATURE_AUDIT.items() if verdict == "safe"]
 
 def print_audit() -> None:
     print(f"\n=== Feature audit (threshold ${HIGH_COST_THRESHOLD_USD:,}) ===")
