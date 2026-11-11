@@ -17,8 +17,7 @@ jobs:
       # One Week 4 test fails from day one by design (see README). CI sets it
       # aside so a green tick means "everything I have written so far works".
       # You switch it on in Week 4.
-      PYTEST_ADDOPTS: >-
-        --deselect tests/test_leakage.py::test_training_features_are_leak_free
+      STUDENT_SEED: "3"
 
     steps:
       - uses: actions/checkout@v4
@@ -67,4 +66,5 @@ jobs:
       # -------------------------------------------------------------------
       - name: Run the test suite
         run: |
+          python train.py
           pytest -v
