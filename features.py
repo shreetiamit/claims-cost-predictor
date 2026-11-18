@@ -1,23 +1,13 @@
 """
-WEEK 3 STARTER — build the member-level feature table, then audit it.
+Build the member-level feature table and audit which columns a model may use.
 
-`data/claims.csv` has one row per claim. A model needs one row per *member*.
-This file is where you do that roll-up yourself, and then decide which of the
-resulting columns you are actually allowed to feed a model.
+claims.csv has one row per claim (about 10 per member). The model predicts one
+label per member, so this script rolls approved claims up to one row per
+member, attaches the is_high_cost label, and records a verdict for every
+column: is it known on January 1, when the prediction is made?
 
-Fill in every section marked TODO. When you run this file it should:
-  1. Load data/members.csv and data/claims.csv
-  2. Keep only claims that were actually approved
-  3. Aggregate claims to one row per member
-  4. Attach the is_high_cost label
-  5. Write data/member_features.csv
-  6. Print your feature audit
-
-Run:
-    python features.py
-
-Check your work:
-    pytest tests/test_features.py -v
+Run:   python features.py
+Test:  pytest tests/test_features.py -v
 """
 
 import pandas as pd
@@ -29,8 +19,7 @@ MEMBERS_PATH = Path("data/members.csv")
 CLAIMS_PATH = Path("data/claims.csv")
 OUT_PATH = Path("data/member_features.csv")
 
-# Every non-identifier column your feature table will contain once you finish
-# build_member_features() and add_label(). You will classify each one below.
+# Every non-identifier column in the feature table, in the order the audit prints.
 AUDITABLE_COLUMNS = [
     "age_bucket",
     "sex",
@@ -51,28 +40,13 @@ AUDITABLE_COLUMNS = [
 
 VALID_VERDICTS = ("safe", "leaky", "debatable", "not_a_feature")
 
-# ---------------------------------------------------------------------------
-# TODO 4 — the feature audit.
-#
-# For EVERY column in AUDITABLE_COLUMNS, replace the ("TODO", "") placeholder
-# with your verdict and a one-line justification:
-#
-#   "safe"           observable at prediction time, safe to use as an input
-#   "leaky"          a restatement of the outcome; using it is cheating
-#   "debatable"      observable in principle, but arguably inside the outcome
-#                    window — say what your position is and why
-#   "not_a_feature"  real column, but not a model input (id, date, the label
-#                    itself, ...)
-#
-# The test suite will not accept an empty justification, and it will not accept
-# a column in your model feature list that can reproduce the label on its own.
-# The question to ask for each column is always the same one:
-#
-#     "On the day I need this prediction, do I already know this number?"
-#
-# A prediction is made to decide who to reach out to BEFORE the plan year's
-# spending happens. Keep that timeline in mind.
-# ---------------------------------------------------------------------------
+# Feature audit. The prediction is made on January 1; the label is only known
+# after December 31. For each column: do I know this number on January 1?
+#   safe           known at enrollment
+#   debatable      a prior-year version would be known, but this column is
+#                  measured during the outcome year
+#   leaky          restates the outcome (the label is built from plan-paid)
+#   not_a_feature  the label itself
 FEATURE_AUDIT: dict[str, tuple[str, str]] = {
     "age_bucket": ("safe", "known at enrollment, before the plan year starts"),
     "sex": ("safe", "known at enrollment, before the plan year starts"),
@@ -93,7 +67,7 @@ FEATURE_AUDIT: dict[str, tuple[str, str]] = {
 
 
 def load_raw() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load the two source tables. Given to you — nothing to do here."""
+    """Load members and claims, generating the synthetic data first if needed."""
     if not CLAIMS_PATH.exists() or not MEMBERS_PATH.exists():
         print("Source CSVs not found — running the generator first.")
         from generate_claims_data import generate
@@ -103,47 +77,16 @@ def load_raw() -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def approved_claims(claims: pd.DataFrame) -> pd.DataFrame:
-    """
-    TODO 1 — return only the claims that were approved.
-
-    Denied claims were submitted but never paid. Look at the
-    `adjudication_status` column and decide what belongs in a feature table
-    that is supposed to describe care the plan actually paid for.
-
-    Roughly 8% of claims are denied, so this line changes your numbers.
-    """
+    """Keep approved claims only. Denied claims (~8%) were never paid, so they
+    are not part of a member's cost."""
     return claims[claims["adjudication_status"] == "approved"].copy()
 
+
 def build_member_features(members: pd.DataFrame, claims: pd.DataFrame) -> pd.DataFrame:
-    """
-    TODO 2 — aggregate claims to one row per member and merge onto `members`.
+    """Roll claims up to one row per member and attach demographics.
 
-    Return a DataFrame with one row per member in `members` and these columns
-    (names matter — the tests check them):
-
-        member_id
-        age_bucket, sex, region, plan_year_start, plan_year_end   (from members)
-        total_claims             count of claims
-        medical_claims           count where is_pharmacy is False
-        pharmacy_claims          count where is_pharmacy is True
-        specialty_drug_fills     count where is_specialty_drug is True
-        total_billed_cents       sum of billed_cents
-        total_allowed_cents      sum of allowed_cents
-        total_plan_paid_cents    sum of plan_paid_cents
-        total_oop_cents          sum of out_of_pocket_cents
-        unique_diagnosis_codes   number of distinct non-empty diagnosis_code
-        inpatient_claims         count where claim_type == "Institutional"
-        has_specialty_drug       True if any claim is a specialty drug
-
-    Hints:
-      - df.groupby("member_id").agg(new_name=("source_col", "how"), ...)
-      - "how" can be a string ("count", "sum") or a lambda for the trickier ones
-        (nunique on non-empty strings, any, boolean counts)
-      - .reset_index() after groupby, then members.merge(agg, on="member_id",
-        how="left")
-      - Think about members with zero approved claims. A left merge leaves NaN
-        for them. Should their total_claims be NaN, or 0? Whatever you choose,
-        the column dtypes should still be numeric.
+    Uses a left merge so members with no approved claims still get a row, and
+    fills their counts with 0: they had zero claims, not an unknown number.
     """
     agg = claims.groupby("member_id").agg(
         total_claims=("claim_id", "count"),
@@ -163,23 +106,18 @@ def build_member_features(members: pd.DataFrame, claims: pd.DataFrame) -> pd.Dat
                    "plan_year_start", "plan_year_end"]
     features = members[member_cols].merge(agg, on="member_id", how="left")
 
-    # Members with no approved claims: they had zero claims, not unknown claims.
     count_cols = [c for c in agg.columns if c not in ("member_id", "has_specialty_drug")]
     features[count_cols] = features[count_cols].fillna(0).astype("int64")
     features["has_specialty_drug"] = features["has_specialty_drug"].eq(True)
 
     return features
 
+
 def add_label(features: pd.DataFrame) -> pd.DataFrame:
-    """
-    TODO 3 — add the `is_high_cost` column (int 0/1).
+    """Add is_high_cost (0/1): plan-paid for the year above the threshold.
 
-    A member is high-cost when their plan-paid total for the year exceeds the
-    threshold. Use HIGH_COST_THRESHOLD_CENTS (not the dollar constant — the
-    columns are in cents).
-
-    Write the one line that creates the label, then look hard at which column
-    you just used. You will need that thought in TODO 4.
+    The label is computed from total_plan_paid_cents, which is why that column
+    (and the money columns that track it) are marked leaky in the audit.
     """
     features = features.copy()
     features["is_high_cost"] = (
@@ -187,17 +125,16 @@ def add_label(features: pd.DataFrame) -> pd.DataFrame:
     ).astype(int)
     return features
 
-def model_features() -> list[str]:
-    """
-    TODO 5 — return the list of column names you will actually train on.
 
-    Derive it from FEATURE_AUDIT rather than typing a list by hand, so that
-    changing a verdict above changes what the model sees. Decide for yourself
-    whether "debatable" columns are in or out, and be ready to defend it.
+def model_features() -> list[str]:
+    """Columns the model trains on, derived from the audit.
+
+    Safe and debatable columns are in: the debatable ones carry real signal
+    (single-column AUC 0.73-0.87, not ~1.0), and a production system would use
+    the prior year's version of each. Leaky columns and the label stay out.
     """
-    # Debatable columns are IN: they carry real signal, and a production system
-    # would use the prior year's version of each. Leaky ones stay out.
     return [col for col, (verdict, _) in FEATURE_AUDIT.items() if verdict in ("safe", "debatable")]
+
 
 def print_audit() -> None:
     print(f"\n=== Feature audit (threshold ${HIGH_COST_THRESHOLD_USD:,}) ===")

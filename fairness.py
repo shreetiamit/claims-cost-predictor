@@ -1,22 +1,13 @@
 """
-WEEK 6 STARTER — audit the model across demographic groups.
+Fairness audit of the care-management model by sex and age.
 
-The model is one number per member. A fairness audit asks whether that number
-is equally wrong for everybody, and "equally wrong" turns out to have several
-mutually incompatible definitions.
+Scores every member at the Week 5 operating point (0.05), reports per-group
+base rates, flag rates and error rates, applies the 80% (four-fifths) rule,
+and compares against a model retrained without sex and age. Writes the
+results to reports/fairness_report.md.
 
-Fill in every section marked TODO. When you run this file it should:
-  1. Score every member with the trained model
-  2. Report per-group rates for sex and age_bucket
-  3. Apply the 80% rule
-  4. Compare against a model retrained without the demographic columns
-  5. Write reports/fairness_report.md
-
-Run:
-    python fairness.py
-
-Check your work:
-    pytest tests/test_fairness.py -v
+Run:   python fairness.py
+Test:  pytest tests/test_fairness.py -v
 """
 
 import joblib
@@ -31,17 +22,9 @@ MODEL_PATH = Path("model.joblib")
 REPORT_PATH = Path("reports/fairness_report.md")
 
 PROTECTED_COLUMNS = ["sex", "age_bucket"]
-DECISION_THRESHOLD = 0.05  # care-management operating point from Week 5
+DECISION_THRESHOLD = 0.05  # care-management operating point from evaluate.py
 
-# ---------------------------------------------------------------------------
-# TODO 6 — your written assessment.
-#
-# After you have the numbers, fill this in. It is graded on whether the claim
-# follows from your own cohort's numbers, not on whether it is reassuring.
-# Reference specific rates. Name the group that is worse off. If a subgroup is
-# too small to conclude anything, say that instead of reporting a ratio to two
-# decimal places as if it meant something.
-# ---------------------------------------------------------------------------
+# Written assessment, based on this cohort's numbers (seed 3).
 ASSESSMENT = (
     "At my care-management threshold (0.05), sex passes the 80% rule (ratio 0.857): "
     "women are flagged 17.2% vs men 20.1%, in line with their base rates (5.8% vs 7.5%). "
@@ -61,13 +44,9 @@ ASSESSMENT = (
     "rather than force equal flag rates."
 )
 
-def confusion_counts(y_true, y_pred) -> dict[str, int]:
-    """
-    TODO 1 — return {"tp": .., "fp": .., "fn": .., "tn": ..}.
 
-    Write it with vectorized comparisons rather than a loop. Both inputs are
-    0/1 arrays or Series.
-    """
+def confusion_counts(y_true, y_pred) -> dict[str, int]:
+    """Count true/false positives and negatives for 0/1 labels and predictions."""
     y_true = np.asarray(y_true).astype(int)
     y_pred = np.asarray(y_pred).astype(int)
     return {
@@ -77,24 +56,19 @@ def confusion_counts(y_true, y_pred) -> dict[str, int]:
         "tn": int(((y_true == 0) & (y_pred == 0)).sum()),
     }
 
+
 def group_metrics(df: pd.DataFrame, group_col: str,
                   y_true_col: str = "y_true", y_pred_col: str = "y_pred") -> pd.DataFrame:
-    """
-    TODO 2 — one row per group value, with these columns:
+    """Per-group rates, one row per group value.
 
-        group, n, base_rate, positive_rate, tpr, fpr, fnr, precision
+    base_rate      share actually high-cost (reality, no model involved)
+    positive_rate  share flagged (demographic parity)
+    tpr / fnr      of the actually high-cost: share caught / share missed
+    fpr            of the actually normal: share flagged anyway
+    precision      of the flagged: share actually high-cost
 
-        n              members in the group
-        base_rate      share of the group that is actually high-cost
-        positive_rate  share of the group the model flags   (demographic parity)
-        tpr            of the actually-high-cost, share flagged
-        fpr            of the actually-normal, share flagged (equalized odds)
-        fnr            1 - tpr; the members the model misses
-        precision      of the flagged, share actually high-cost
-
-    Build it on top of confusion_counts(). Sort by group so the output is stable
-    across runs. Guard the divisions: a group with zero actual positives has no
-    TPR, and reporting 0.0 there is a lie — use np.nan.
+    A rate with nothing to divide by is NaN, not 0: a group with no high-cost
+    members has no miss rate, and 0% would wrongly claim the model caught them all.
     """
     def safe_divide(num, den):
         return num / den if den > 0 else np.nan
@@ -121,11 +95,11 @@ def group_metrics(df: pd.DataFrame, group_col: str,
     columns = ["group", "n", "base_rate", "positive_rate", "tpr", "fpr", "fnr", "precision"]
     return pd.DataFrame(rows, columns=columns).sort_values("group").reset_index(drop=True)
 
-def disparate_impact_ratio(rates: pd.Series) -> float:
-    """
-    TODO 3 — the four-fifths ratio: the lowest rate divided by the highest.
 
-    Ignore nan rates. Returns a number in [0, 1], where 1.0 is exact parity.
+def disparate_impact_ratio(rates: pd.Series) -> float:
+    """Lowest group rate divided by the highest; 1.0 means every group is equal.
+
+    Unknown (NaN) rates are skipped rather than treated as 0.
     """
     rates = pd.Series(rates, dtype=float).dropna()
     if rates.empty:
@@ -135,40 +109,24 @@ def disparate_impact_ratio(rates: pd.Series) -> float:
         return 1.0  # every group at zero: equal, if useless
     return float(rates.min() / highest)
 
-def passes_80_percent_rule(ratio: float) -> bool:
-    """
-    TODO 4 — True when the ratio clears the EEOC four-fifths guideline.
 
-    Careful with the boundary: exactly 0.80 passes.
+def passes_80_percent_rule(ratio: float) -> bool:
+    """EEOC four-fifths guideline: passes at 0.80 or above.
+
+    The small tolerance keeps an exact 0.80 passing despite floating-point error.
     """
     if ratio is None or np.isnan(ratio):
         return False
     return bool(ratio >= 0.8 - 1e-9)
 
+
 def blind_model_comparison(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    TODO 5 — retrain without the demographic columns and re-audit.
+    """Retrain without sex and age on the same training rows, and compare ratios.
 
-    `df` arrives with y_true / y_pred already on it from the full model. Score
-    the blind model yourself rather than reusing those columns, so the two
-    numbers you compare come from two actual models.
-
-    Steps:
-      - take the fitted pipeline's feature list, drop PROTECTED_COLUMNS
-      - build and fit a pipeline of the same shape on the same training split
-      - score, threshold, and run group_metrics() again per protected column
-      - return a DataFrame with one row per protected column and the disparate
-        impact ratio with the demographic features and without, side by side
-
-    Predict the result before you run it, in one sentence: I expect the age
-    disparity to mostly survive, because older members have more claims and
-    more specialty drugs, so the claim counts carry age information even after
-    the age column is removed.
-
-    Most students expect the disparity to disappear. Whatever you find, the
-    interesting question is *why*. Which remaining columns carry the same
-    information the demographic columns did? Check with:
-        df.groupby("sex")[numeric_cols].mean()
+    My prediction before running it: the age disparity would mostly survive,
+    because older members have more claims and specialty drugs. Result: it did
+    (age 0.366 with demographics, 0.406 without). The claim counts carry the
+    same information the age column did.
     """
     from sklearn.compose import ColumnTransformer
     from sklearn.ensemble import RandomForestClassifier
@@ -201,6 +159,7 @@ def blind_model_comparison(df: pd.DataFrame) -> pd.DataFrame:
     ])
     blind.fit(train_df[blind_features], train_df["y_true"].astype(int))
 
+    # Score with the blind model's own predictions, not the full model's.
     blind_proba = blind.predict_proba(df[blind_features])[:, 1]
     blind_scored = df.assign(y_pred=(blind_proba >= DECISION_THRESHOLD).astype(int))
 
@@ -214,6 +173,7 @@ def blind_model_comparison(df: pd.DataFrame) -> pd.DataFrame:
             "ratio_without_demographics": disparate_impact_ratio(without_demo),
         })
     return pd.DataFrame(rows)
+
 
 def main() -> None:
     df = pd.read_csv(DATA_PATH)
