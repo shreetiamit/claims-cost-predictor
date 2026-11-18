@@ -18,4 +18,4 @@ services:
       - key: HIGH_COST_THRESHOLD_USD
         value: "25000"
       - key: STUDENT_SEED
-        value: "42"          # <-- change to your assigned seed
+        value: "3"          # my assigned seed
