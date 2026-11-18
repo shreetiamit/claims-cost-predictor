@@ -1,15 +1,14 @@
 """
-WEEK 7 STARTER (part 2 of 2) — serve the model over HTTP.
+Claims Risk API: serves the high-cost model over HTTP.
 
-The model is a file on disk. This file is what turns it into something a care
-management tool can call. Two endpoints, one model load, no surprises.
+    GET  /health   is the service up, and did the model load?
+    POST /predict  score one member at the care-management threshold (0.05)
 
-Fill in every section marked TODO. When you are done:
-
+Run locally:
     uvicorn app.main:app --reload --port 8000
     open http://localhost:8000/docs
 
-Check your work:
+Test:
     pytest tests/test_api.py -v
 """
 
@@ -23,26 +22,16 @@ from app.schemas import MemberFeatures, PredictionResponse
 from config import HIGH_COST_THRESHOLD_USD
 
 MODEL_PATH = Path("model.joblib")
-DECISION_THRESHOLD = 0.05  # care-management operating point from Week 5
+DECISION_THRESHOLD = 0.05  # care-management operating point from evaluate.py
 model = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    TODO 1 — load the model once, at startup.
+    """Load the model once at startup instead of on every request.
 
-    Set the module-level `model` (you will need `global model`).
-
-    Why here and not inside the endpoint: joblib.load() on every request would
-    add hundreds of milliseconds and re-read the file each time. Load once,
-    answer many.
-
-    Fail loudly if MODEL_PATH does not exist: a service that starts up happily
-    and then 500s on every request is worse than one that refuses to boot.
-    Raise RuntimeError with a message that tells the operator to run train.py.
-
-    Everything before `yield` runs at startup, everything after at shutdown.
+    If model.joblib is missing, refuse to start: a service that boots and then
+    fails every request is worse than one that fails loudly at deploy time.
     """
     global model
     if not MODEL_PATH.exists():
@@ -63,40 +52,21 @@ app = FastAPI(
 
 @app.get("/health")
 def health():
-    """
-    TODO 2 — return {"status": "ok", "model_loaded": <bool>}.
-
-    Render polls this endpoint to decide whether your service is alive, so it
-    must not do any real work. Report whether the model actually loaded rather
-    than hard-coding True; "the process is up" and "the service can serve" are
-    different claims.
-    """
+    """Liveness check for Render. Reports whether the model actually loaded,
+    since "the process is up" and "the service can serve" are different claims."""
     return {"status": "ok", "model_loaded": model is not None}
+
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict(features: MemberFeatures):
-    """
-    TODO 3 — score one member.
+    """Score one member.
 
-    Steps:
-      1. If the model somehow is not loaded, raise HTTPException(status_code=503).
-      2. Turn `features` into a one-row DataFrame.
-      3. Get the probability of the positive class.
-      4. Compare against DECISION_THRESHOLD to get the bool.
-      5. Return a PredictionResponse, rounding the probability to 4 places and
-         echoing HIGH_COST_THRESHOLD_USD.
+    Returns 503 if the model isn't loaded, and 422 if the counts contradict
+    each other: the request is valid JSON but describes an impossible member,
+    so we say so rather than return a score.
 
-    Resist the urge to "fix up" the row on the way in — no rescaling, no unit
-    conversion, no reordering columns. The pipeline you saved has its
-    preprocessing inside it, and anything you do here happens on top of that.
-    Errors of this kind are silent: no exception, just a different probability
-    than the one your notebook reported for the same member. That is train/serve
-    skew, and tests/test_api.py checks for it by comparing your endpoint against
-    a direct model call across a spread of members.
-
-    Also decide what a caller should get when the input is valid JSON but
-    nonsense (pharmacy_claims greater than total_claims, say). FastAPI will not
-    catch that for you.
+    The row goes to the pipeline untouched. Its preprocessing is inside it, so
+    any rescaling or reordering here would cause train/serve skew.
     """
     if model is None:
         raise HTTPException(
@@ -120,7 +90,6 @@ def predict(features: MemberFeatures):
     if problems:
         raise HTTPException(status_code=422, detail=problems)
 
-    # Pass the row through untouched: the pipeline does its own preprocessing.
     row = pd.DataFrame([features.model_dump()])
     probability = float(model.predict_proba(row)[0, 1])
 

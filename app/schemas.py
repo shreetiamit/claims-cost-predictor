@@ -1,14 +1,8 @@
 """
-WEEK 7 STARTER (part 1 of 2) — the request and response contract.
+Request and response contract for the Claims Risk API.
 
-Pydantic is doing two jobs here. It stops malformed requests before they reach
-the model, and it generates the OpenAPI docs that tell a caller what this
-service expects. Both of those are the contract, so get the constraints right.
-
-Fill in every section marked TODO.
-
-Check your work:
-    pytest tests/test_api.py -v
+Pydantic rejects malformed requests before they reach the model (422), and
+these models also generate the OpenAPI docs at /docs.
 """
 
 from typing import Literal
@@ -16,29 +10,12 @@ from pydantic import BaseModel, Field
 
 
 class MemberFeatures(BaseModel):
-    """
-    TODO 1 — declare the request body.
+    """One member's features, named exactly as the model's training columns.
 
-    One field per feature your model was trained on. Requirements:
-
-      - age_bucket, sex, region should only accept the values that exist in the
-        training data. Anything else is a caller bug and should be rejected with
-        a 422, not silently scored. Hint: typing.Literal.
-      - the count and amount fields are non-negative integers. A member cannot
-        have -3 claims. Hint: Field(ge=0).
-      - has_specialty_drug is a bool.
-      - the field names must match the column names the model was trained on,
-        because main.py turns this object straight into a one-row DataFrame.
-
-    The columns your model expects (run this if you are unsure which ones you
-    settled on in Week 4):
-
-        python -c "import joblib; \
-          print(list(joblib.load('model.joblib')['preprocessor'].feature_names_in_))"
-
-    Then think about which of these constraints you *cannot* express here, and
-    what happens at predict time if a caller violates one — e.g. nothing stops
-    them sending medical_claims=5 with total_claims=1.
+    Categories only accept values seen in training, and counts must be
+    non-negative, so a caller bug fails loudly instead of being silently scored.
+    Rules that span several fields (e.g. medical + pharmacy = total) can't be
+    expressed per field; app/main.py checks those.
     """
 
     age_bucket: Literal["18-29", "30-39", "40-49", "50-59", "60-64"] = Field(
@@ -56,18 +33,10 @@ class MemberFeatures(BaseModel):
 
 
 class PredictionResponse(BaseModel):
-    """
-    is_high_cost: bool = Field(description="True if probability >= the decision threshold")
-    probability: float = Field(ge=0.0, le=1.0, description="Predicted probability of high cost")
-    threshold_dollars: int = Field(description="Plan-paid dollar threshold the label is defined at")
-    
-    Three fields:
-        is_high_cost       bool   the decision
-        probability        float  constrained to [0.0, 1.0]
-        threshold_dollars  int    which threshold this prediction is relative to
+    """The decision, the probability behind it, and the dollar threshold it refers to.
 
-    That third field looks redundant until you deploy a second model trained at
-    a different threshold and a caller has a number with no idea what it means.
+    threshold_dollars makes the response self-describing: if a second model is
+    ever trained at a different threshold, a caller can tell them apart.
     """
 
     is_high_cost: bool = Field(description="True if probability >= the decision threshold")

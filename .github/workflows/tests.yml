@@ -14,16 +14,13 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # One Week 4 test fails from day one by design (see README). CI sets it
-      # aside so a green tick means "everything I have written so far works".
-      # You switch it on in Week 4.
+      # Same cohort as local development and the Render deploy.
       STUDENT_SEED: "3"
 
     steps:
       - uses: actions/checkout@v4
 
-      # 3.11 is what SETUP.md asks for locally; the pinned numpy and
-      # scikit-learn have no wheels for 3.13.
+      # Pinned numpy and scikit-learn have no wheels for 3.13.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -35,35 +32,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      # -------------------------------------------------------------------
-      # TODO (Week 1) — this step is yours. Make it run the test suite.
-      #
-      # The tests in this repo are written with **pytest**. The step above has
-      # already installed it (it comes in requirements-dev.txt), so by the time
-      # this step runs it is there and ready to use.
-      #
-      # `run:` executes a shell command on the CI machine — the same command
-      # you would type in your own terminal. Work out what that command is from
-      # the pytest documentation rather than from us:
-      #
-      #   How to invoke pytest
-      #     https://docs.pytest.org/en/stable/how-to/usage.html
-      #
-      # Two more pages worth your time while you are there, because you will
-      # be living in this tool for the next seven weeks:
-      #
-      #   How pytest finds your tests — why the files are named test_*.py and
-      #   the functions test_*, and what happens if you rename them
-      #     https://docs.pytest.org/en/stable/explanation/goodpractices.html
-      #
-      #   Controlling what pytest prints — useful when a CI log is all you have
-      #   to debug from, which is most of the time
-      #     https://docs.pytest.org/en/stable/how-to/output.html
-      #
-      # Replace both lines below, commit on a branch, and open a PR. The check
-      # runs on the PR itself, so you will see whether you got it right before
-      # anything reaches main.
-      # -------------------------------------------------------------------
+      # model.joblib is gitignored, so train it first. Otherwise the model,
+      # evaluation, fairness and API tests have no model to load.
       - name: Run the test suite
         run: |
           python train.py
